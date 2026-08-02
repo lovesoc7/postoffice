@@ -13,9 +13,16 @@ def _additional_preprocess(df:pd.DataFrame,split=True)->tuple[pd.DataFrame,pd.Da
         return X,y
     return df
 ###################################################################
-def train_lgbm(df_train:pd.DataFrame, df_eval:pd.DataFrame)->lgb.LGBMRegressor:
+def train_lgbm(df_train: pd.DataFrame, df_eval: pd.DataFrame) -> lgb.LGBMRegressor:
     """
     LightGBM 시계열 회귀 모델을 학습시켜서 반환함.
+
+    ⚠️ 중요: df_eval은 반드시 '훈련기간 내부'에서 떼어낸 검증(validation)셋이어야 합니다.
+    최종 테스트셋(df_test)을 여기에 그대로 넣으면 early stopping이 테스트셋을
+    보고 멈출 시점을 정하게 되어 테스트 성능이 실제보다 낙관적으로 나옵니다(누수).
+    사용 예:
+        df_train2, df_valid = data.split_timeseries_data(df_train, test_days=30)
+        model = train_lgbm(df_train2, df_valid)   # df_test는 여기 쓰지 않음
     """
     # lgbm모델에 맞춰 전처리: 필요없는 열 떨구고 X, y 분리
     X_train, y_train = _additional_preprocess(df_train)
@@ -45,13 +52,18 @@ def train_lgbm(df_train:pd.DataFrame, df_eval:pd.DataFrame)->lgb.LGBMRegressor:
         ]
     )
     return model
-def predict_lgbm(model:lgb.DaskLGBMRegressor, X:pd.DataFrame)->pd.DataFrame:
-    # 예측 및 후처리 (물량은 음수가 나올 수 없음)
-    
-    try:
-        X = _additional_preprocess(X)[0]
-    except:
-        X = _additional_preprocess(X,False)
-    y_pred = model.predict(X)
+def predict_lgbm(model: lgb.LGBMRegressor, X: pd.DataFrame) -> np.ndarray:
+    """
+    예측 및 후처리 (물량은 음수가 나올 수 없음).
+    타겟 컬럼('총중량_kg') 존재 여부를 명시적으로 확인해서 분기한다.
+    (기존 try/except는 어떤 에러든 다 삼켜서 진짜 버그를 숨길 수 있었음)
+    """
+    label_col = "총중량_kg"
+    if label_col in X.columns:
+        X_processed, _ = _additional_preprocess(X, split=True)
+    else:
+        X_processed = _additional_preprocess(X, split=False)
+
+    y_pred = model.predict(X_processed)
     y_pred = np.maximum(y_pred, 0)
     return y_pred

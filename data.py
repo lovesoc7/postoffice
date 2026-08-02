@@ -88,8 +88,25 @@ all_regions = ['강원특별자치도',
                '광주광역시','대구광역시','대전광역시','부산광역시',
                '서울특별시','세종특별자치시',
                '울산광역시','인천광역시',
-               '전라남도','전라북도','제주특별자치도','충청남도','충청북도']
+               '전라남도','전북특별자치도','제주특별자치도','충청남도','충청북도']
 region_type = pd.CategoricalDtype(categories=all_regions, ordered=False)
+
+# 행정구역 명칭 변경 이력 대응용 매핑
+# - 강원도 -> 강원특별자치도 (2023.6.11)
+# - 전라북도 -> 전북특별자치도 (2024.1.18)
+# 과거 연도 데이터를 나중에 합칠 경우를 대비해 구명칭이 섞여 들어와도
+# 안전하게 표준 명칭으로 통일한다 (raw 데이터가 신명칭이어도 그대로 통과됨).
+_legacy_region_map = {
+    '강원도': '강원특별자치도',
+    '전라북도': '전북특별자치도',
+}
+
+def _normalize_region_names(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    for col in ['접수지역', '배달지역']:
+        if col in df.columns:
+            df[col] = df[col].replace(_legacy_region_map)
+    return df
 
 def _data_download(save_dir:str="./raw"):
     """
@@ -183,11 +200,26 @@ def _preprocess_pandas_table(df:pd.DataFrame) -> pd.DataFrame:
     """
     # 접수일자를 문자형에서 날짜형으로 형변환
     df['접수일자'] = pd.to_datetime(df['접수일자'])
+
+    # 행정구역 명칭 변경 대응 (전라북도->전북특별자치도 등) - 범주형 변환 전에 필수
+    df = _normalize_region_names(df)
+
     # 접수지역, 배달지역을 범주형으로 변환
     df['접수지역'] = df['접수지역'].astype(region_type)
     df['배달지역'] = df['배달지역'].astype(region_type)
-    # 일자, 지역별로 그룹핑
-    df = df.groupby(['접수일자', '접수지역' , '배달지역']).agg(
+
+    # ⚠️ 안전장치: 범주 목록에 없는 값이 있으면 조용히 사라지지 않고 반드시 알림
+    n_bad_pickup = df['접수지역'].isna().sum()
+    n_bad_deliver = df['배달지역'].isna().sum()
+    if n_bad_pickup > 0 or n_bad_deliver > 0:
+        raise ValueError(
+            f"region_type 범주에 없는 지역명이 발견되어 {n_bad_pickup + n_bad_deliver}건이 "
+            f"NaN으로 변환될 뻔했습니다 (접수지역 {n_bad_pickup}건, 배달지역 {n_bad_deliver}건). "
+            f"data.py의 all_regions / _legacy_region_map을 원본 데이터 표기에 맞춰 업데이트하세요."
+        )
+
+    # 일자, 지역별로 그룹핑 (observed=True: 실제 관측된 조합만 집계, 불필요한 전체조합 확장 방지)
+    df = df.groupby(['접수일자', '접수지역' , '배달지역'], observed=True).agg(
         총중량_kg=('중량', lambda x: x.sum() / 1000.0), # g -> kg 단위 변환
     ).reset_index()
     return df
