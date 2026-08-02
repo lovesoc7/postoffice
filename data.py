@@ -99,13 +99,15 @@ region_type = pd.CategoricalDtype(categories=all_regions, ordered=False)
 _legacy_region_map = {
     '강원도': '강원특별자치도',
     '전라북도': '전북특별자치도',
+    '제주도': '제주특별자치도',
 }
 
 def _normalize_region_names(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    for col in ['접수지역', '배달지역']:
+    for col in ["접수지역", "배달지역"]:
         if col in df.columns:
-            df[col] = df[col].replace(_legacy_region_map)
+            # 구명칭('강원도', '전라북도')이 실제 데이터에 존재할 때만 컬럼 변경 진행
+            if df[col].isin(_legacy_region_map.keys()).any():
+                df[col] = df[col].replace(_legacy_region_map)
     return df
 
 def _data_download(save_dir:str="./raw"):
@@ -205,6 +207,12 @@ def _preprocess_pandas_table(df:pd.DataFrame) -> pd.DataFrame:
     df = _normalize_region_names(df)
 
     # 접수지역, 배달지역을 범주형으로 변환
+
+    df = df.dropna(subset=['접수지역'])
+    df = df.dropna(subset=['배달지역'])
+    # temp_st_region_list = df['접수지역'].unique().tolist()
+    # temp_dst_region_list = df['배달지역'].unique().tolist()
+
     df['접수지역'] = df['접수지역'].astype(region_type)
     df['배달지역'] = df['배달지역'].astype(region_type)
 
@@ -216,6 +224,7 @@ def _preprocess_pandas_table(df:pd.DataFrame) -> pd.DataFrame:
             f"region_type 범주에 없는 지역명이 발견되어 {n_bad_pickup + n_bad_deliver}건이 "
             f"NaN으로 변환될 뻔했습니다 (접수지역 {n_bad_pickup}건, 배달지역 {n_bad_deliver}건). "
             f"data.py의 all_regions / _legacy_region_map을 원본 데이터 표기에 맞춰 업데이트하세요."
+            # f"unique목록: st:{temp_st_region_list}, dst:{temp_dst_region_list}."
         )
 
     # 일자, 지역별로 그룹핑 (observed=True: 실제 관측된 조합만 집계, 불필요한 전체조합 확장 방지)
@@ -330,10 +339,15 @@ def preprocess_pipeline(src_path: str="./unziped") -> pd.DataFrame:
     src_path: 파일들이 위치한 경로
     """
     df = _to_pandas_table(src_path)
+    print("preprocess_pipeline: _to_pandas_table done..")
     df = _preprocess_pandas_table(df)
+    print("preprocess_pipeline: _preprocess_pandas_table done..")
     df = _add_date_features(df)
+    print("preprocess_pipeline: _add_date_features done..")
     df = _add_lag_and_rolling_features(df)
+    print("preprocess_pipeline: _add_lag_and_rolling_features done..")
     df = df.dropna().reset_index(drop=True) # 지연피처 추가시에 생긴 nan제거
+    print("preprocess_pipeline: all process done..")
     return df
 def split_timeseries_data(
     df: pd.DataFrame, 
