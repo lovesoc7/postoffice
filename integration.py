@@ -46,7 +46,9 @@ def run_daily_dispatch_optimization(
         if not origin_weights:
             continue
 
-        result = dispatch.evaluate_consolidation(dest, origin_weights)
+        # result = dispatch.evaluate_consolidation(dest, origin_weights)
+        result = dispatch.evaluate_greedy_consolidation(dest, origin_weights)
+        
 
         records.append({
             "날짜": date,

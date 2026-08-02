@@ -165,81 +165,146 @@ class ConsolidationResult:
     best_hub_cost: int | None
     savings: int                  # 직송 대비 허브경유 절감액 (양수면 허브가 더 쌈)
     detail: dict
-
-
-def evaluate_consolidation(
+def evaluate_greedy_consolidation(
     destination: str,
-    origin_weights_kg: dict,      # {출발지역: 물량kg}
-    hub_candidates: list = None,
+    origin_weights_kg: dict[str, float],
 ) -> ConsolidationResult:
-    """
-    같은 목적지로 가는 여러 출발지 물량에 대해
-    [직송] vs [허브경유] 비용을 비교하여 더 싼 쪽을 결정한다.
-    """
-    if hub_candidates is None:
-        hub_candidates = list(HUB_COORDS.keys())
+    """탐욕법(Greedy) 기반 단계적 몰아주기 배차 최적화.
 
-    # --- 옵션 A: 직송 (출발지별로 각자 목적지까지) ---
-    direct_detail = {}
-    direct_total = 0
-    for origin, w in origin_weights_kg.items():
-        dist = region_distance_km(origin, destination)
-        r = optimize_truck_dispatch(w, dist)
-        direct_detail[origin] = r
-        direct_total += r.total_cost
+    1. 모든 출발지 쌍 (i -> j)에 대해 [각자 직송] vs [i를 j로 몰아주기] 절감액 계산
+    2. 가장 절감 금액이 큰 (i, j) 조합을 선택하여 i 물량을 j로 통합 (j 물동량 갱신, i 제거)
+    3. 이 과정을 더 이상 절감되는 조합이 없을 때까지 반복
+    """
+    # 물량 복사본 준비
+    weights = origin_weights_kg.copy()
 
-    # --- 옵션 B: 허브경유 (출발지들 -> 허브 -> 목적지, 허브에서 합쳐서 1번에) ---
-    hub_costs = {}
-    hub_details = {}
-    for hub in hub_candidates:
-        # 1구간: 각 출발지 -> 허브 (각자 트럭배차)
-        leg1_cost = 0
-        leg1_detail = {}
-        for origin, w in origin_weights_kg.items():
-            dist = region_to_hub_distance_km(origin, hub)
+    # ------------------------------------------------------------------
+    # 1. Baseline: 처음에 모두 각자 직송할 때의 총비용 계산
+    # ------------------------------------------------------------------
+    direct_details = {}
+    direct_total_cost = 0
+    for origin, w in weights.items():
+        if w > 0:
+            dist = region_distance_km(origin, destination)
             r = optimize_truck_dispatch(w, dist)
-            leg1_detail[origin] = r
-            leg1_cost += r.total_cost
+            direct_details[origin] = r
+            direct_total_cost += r.total_cost
 
-        # 허브 접촉(하역+분류+재적재+대기) 비용: 출발지 수만큼 발생
-        handling_cost = COST_ASSUMPTIONS["hub_handling_cost_per_touch"] * len(origin_weights_kg)
+    # 상태 추적 변수
+    active_origins = [o for o, w in weights.items() if w > 0]
+    total_feed_cost = 0  # 몰아주는 1구간 트럭 비용 누적
+    total_handling_cost = 0  # 하역/분류비 누적
+    merge_history = []  # 병합 히스토리 기록
 
-        # 2구간: 허브 -> 목적지 (합쳐진 물량을 "한 번에" 배차 = 트럭 대수 절감 효과 발생)
-        total_weight = sum(origin_weights_kg.values())
-        dist_hub_to_dest = region_distance_km(destination, destination) if hub == destination else haversine_km(
-            HUB_COORDS[hub], REGION_COORDS[destination]
-        )
-        leg2 = optimize_truck_dispatch(total_weight, dist_hub_to_dest)
-
-        total = leg1_cost + handling_cost + leg2.total_cost
-        hub_costs[hub] = total
-        hub_details[hub] = {
-            "leg1_구간별": leg1_detail,
-            "handling_cost": handling_cost,
-            "leg2_허브to목적지": leg2,
-        }
-
-    best_hub = min(hub_costs, key=hub_costs.get) if hub_costs else None
-    best_hub_cost = hub_costs[best_hub] if best_hub else None
-
-    if best_hub_cost is not None and best_hub_cost < direct_total:
-        decision = "hub"
-        savings = direct_total - best_hub_cost
-    else:
-        decision = "direct"
-        savings = direct_total - (best_hub_cost or direct_total)
-
-    return ConsolidationResult(
-        decision=decision,
-        chosen_hub=best_hub if decision == "hub" else None,
-        direct_cost=direct_total,
-        hub_cost=hub_costs,
-        best_hub_cost=best_hub_cost,
-        savings=savings,
-        detail={"direct": direct_detail, "hub": hub_details},
+    handling_cost_per_touch = COST_ASSUMPTIONS.get(
+        "hub_handling_cost_per_touch", 10000
     )
 
+    # ------------------------------------------------------------------
+    # 2. 탐욕적 반복 병합 (Greedy Loop)
+    # ------------------------------------------------------------------
+    while len(active_origins) > 1:
+        best_savings = 0
+        best_pair = None  # (feeder_i, target_j)
+        best_feed_dispatch = None
 
+        # 현재 살아있는 모든 출발지 쌍 (i -> j) 전수 조사
+        for i_origin in active_origins:
+            for j_origin in active_origins:
+                if i_origin == j_origin:
+                    continue
+
+                w_i = weights[i_origin]
+                w_j = weights[j_origin]
+
+                # (A) 두 지역이 지금 상태에서 각각 목적지로 직송할 때의 비용 (OR-Tools)
+                dist_i_dest = region_distance_km(i_origin, destination)
+                dist_j_dest = region_distance_km(j_origin, destination)
+                cost_i_direct = optimize_truck_dispatch(
+                    w_i, dist_i_dest
+                ).total_cost
+                cost_j_direct = optimize_truck_dispatch(
+                    w_j, dist_j_dest
+                ).total_cost
+                pair_direct_cost = cost_i_direct + cost_j_direct
+
+                # (B) i를 j로 몰아주고, j에서 합쳐서 목적지로 쏠 때의 비용 (OR-Tools)
+                dist_i_j = region_distance_km(i_origin, j_origin)
+                r_feed = optimize_truck_dispatch(
+                    w_i, dist_i_j
+                )  # i -> j 피딩 트럭비
+
+                cost_merged = optimize_truck_dispatch(
+                    w_i + w_j, dist_j_dest
+                ).total_cost  # (i+j) -> D 합침 트럭비
+
+                consolidated_cost = (
+                    r_feed.total_cost + cost_merged + handling_cost_per_touch
+                )
+
+                # (C) 절감 금액 계산
+                savings = pair_direct_cost - consolidated_cost
+
+                # 가장 절감 금액이 큰 쌍으로 갱신
+                if savings > best_savings:
+                    best_savings = savings
+                    best_pair = (i_origin, j_origin)
+                    best_feed_dispatch = r_feed
+
+        # ⚠️ 더 이상 돈이 절약되는 조합이 없으면 탐욕 반복 종료!
+        if best_pair is None or best_savings <= 0:
+            break
+
+        # 가장 이득이 큰 조합으로 물량 병합 실행
+        feeder, target = best_pair
+
+        # 비용 및 병합 내역 기록
+        total_feed_cost += best_feed_dispatch.total_cost
+        total_handling_cost += handling_cost_per_touch
+        merge_history.append({
+            "feeder": feeder,
+            "target": target,
+            "moved_weight_kg": weights[feeder],
+            "feed_cost": best_feed_dispatch.total_cost,
+            "savings": best_savings,
+        })
+
+        # 🔑 물류량 갱신: feeder의 물량을 target에 더해주고, feeder는 목록에서 제거
+        weights[target] += weights[feeder]
+        weights[feeder] = 0
+        active_origins.remove(feeder)
+
+    # ------------------------------------------------------------------
+    # 3. 최종 배차 및 절감액 계산
+    # ------------------------------------------------------------------
+    # 최종 남아있는 거점 노드들 -> 목적지(D) 배차 계산 (OR-Tools)
+    final_direct_cost = 0
+    final_dispatches = {}
+    for o in active_origins:
+        dist = region_distance_km(o, destination)
+        r = optimize_truck_dispatch(weights[o], dist)
+        final_dispatches[o] = r
+        final_direct_cost += r.total_cost
+
+    final_total_cost = (
+        total_feed_cost + total_handling_cost + final_direct_cost
+    )
+    total_savings = direct_total_cost - final_total_cost
+
+    return ConsolidationResult(
+        decision="hub" if merge_history else "direct",
+        chosen_hub=merge_history[-1]["target"] if merge_history else None,
+        direct_cost=direct_total_cost,
+        hub_cost={"greedy_merged": final_total_cost},
+        best_hub_cost=final_total_cost,
+        savings=total_savings,
+        detail={
+            "direct": direct_details,
+            "merge_history": merge_history,  # 👈 어떤 순서로 합쳐졌는지 단계별 히스토리
+            "final_dispatches": final_dispatches,
+            "active_hubs": active_origins,
+        },
+    )
 def print_consolidation_result(destination: str, origin_weights_kg: dict, result: ConsolidationResult):
     print("=" * 60)
     print(f"📦 목적지: {destination}")
