@@ -212,7 +212,6 @@ def _preprocess_pandas_table(df:pd.DataFrame) -> pd.DataFrame:
     df = _normalize_region_names(df)
 
     # 접수지역, 배달지역을 범주형으로 변환
-
     df = df.dropna(subset=['접수지역'])
     df = df.dropna(subset=['배달지역'])
     # temp_st_region_list = df['접수지역'].unique().tolist()
@@ -354,6 +353,9 @@ def preprocess_pipeline(src_path: str="./unziped") -> pd.DataFrame:
     df = _add_lag_and_rolling_features(df)
     print("preprocess_pipeline: _add_lag_and_rolling_features done..")
     df = df.dropna().reset_index(drop=True) # 지연피처 추가시에 생긴 nan제거
+    df = df[
+        (df['접수지역'] != '제주특별자치도') & (df['배달지역'] != '제주특별자치도')
+    ]
     print("preprocess_pipeline: all process done..")
     return df
 def split_timeseries_data(
