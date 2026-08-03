@@ -23,6 +23,7 @@
 
 import math
 from dataclasses import dataclass
+from functools import lru_cache
 
 from ortools.sat.python import cp_model
 
@@ -56,7 +57,7 @@ LOAD_SAFETY_MARGIN = 0.9  # 실제로는 만재적재 안 하고 90%까지만 �
 # ---------------------------------------------------------------------------
 # 2. 지역/허브 좌표 (근사치 — 실제 제출본에서는 카카오/네이버 API 좌표로 교체 권장)
 #    ※ 여기 좌표는 도청 소재지 근사 위경도이며, 정밀 거리 계산용이 아니라
-#      "허브경유가 유리해지는 구조"를 보여주는 데모용입니다.
+#       "허브경유가 유리해지는 구조"를 보여주는 데모용입니다.
 # ---------------------------------------------------------------------------
 REGION_COORDS = {
     "서울특별시": (37.5665, 126.9780), "경기도": (37.4138, 127.5183),
@@ -113,7 +114,19 @@ def optimize_truck_dispatch(weight_kg: float, distance_km: float) -> DispatchRes
     """
     주어진 구간(거리)에서 weight_kg를 실어 나르는 데 필요한 톤급별 트럭 대수를
     총비용 최소화 기준으로 계산한다 (정수계획법, bin-packing).
+
+    ⚠️ 성능 최적화: 탐욕 알고리즘(evaluate_greedy_consolidation)이 같은 (물량,거리)
+    조합을 반복 평가에서 여러 번 다시 계산하는 경우가 많아, 1kg/1km 단위로 반올림한
+    캐시를 앞단에 둔다. OR-Tools는 모델 생성+solver 호출 자체의 오버헤드가 커서
+    이 캐싱만으로도 대량 반복 호출 시 체감 속도가 크게 개선된다.
     """
+    weight_key = round(weight_kg)
+    distance_key = round(distance_km)
+    return _optimize_truck_dispatch_cached(weight_key, distance_key)
+
+
+@lru_cache(maxsize=200_000)
+def _optimize_truck_dispatch_cached(weight_kg: int, distance_km: int) -> DispatchResult:
     if weight_kg <= 0:
         return DispatchResult(0, {t: 0 for t in TRUCK_CLASSES}, 0.0, 0.0, distance_km)
 
@@ -165,6 +178,8 @@ class ConsolidationResult:
     best_hub_cost: int | None
     savings: int                  # 직송 대비 허브경유 절감액 (양수면 허브가 더 쌈)
     detail: dict
+
+
 def evaluate_greedy_consolidation(
     destination: str,
     origin_weights_kg: dict[str, float],
@@ -305,12 +320,14 @@ def evaluate_greedy_consolidation(
             "active_hubs": active_origins,
         },
     )
+
+
 def print_consolidation_result(destination: str, origin_weights_kg: dict, result: ConsolidationResult):
     print("=" * 60)
     print(f"📦 목적지: {destination}")
     print(f"   출발지별 물량: { {k: f'{v:,.0f}kg' for k, v in origin_weights_kg.items()} }")
     print("-" * 60)
-    print(f" [직송] 총비용        : {result.direct_cost:,} 원")
+    print(f" [직송] 총비용         : {result.direct_cost:,} 원")
     for hub, cost in result.hub_cost.items():
         mark = " ⭐" if hub == result.chosen_hub else ""
         print(f" [허브경유:{hub}] 총비용 : {cost:,} 원{mark}")
