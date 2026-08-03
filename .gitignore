@@ -3,3 +3,5 @@ raw
 unziped
 __*
 patch
+temp
+.env

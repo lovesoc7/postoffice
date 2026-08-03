@@ -24,9 +24,38 @@
 import math
 from dataclasses import dataclass
 from functools import lru_cache
+import pandas as pd
 
 from ortools.sat.python import cp_model
 
+# # 실제 거리 데이터가 사용가능하면 아래 근사치말고 그거를 이용함.
+# is_distance_data_available = False
+# try:
+#     data_distance = pd.read_csv("과학기술정보통신부 우정사업본부_우편집중국간 차량운송집계데이터_20191031.csv", encoding='cp949')
+#     data_distance = data_distance.groupby(['발송집중국', '도착집중국'], as_index=False).agg({'운송거리(km)': 'mean'})
+#     data_distance = data_distance.set_index(['발송집중국', '도착집중국'])
+#     is_distance_data_available = True
+#     # 1. 17개 광역 지자체 -> 대표 집중국 매핑 딕셔너리
+#     REGION_TO_HUB = {
+#         "서울특별시": "동서울우편집중국",
+#         "경기도": "수원우편집중국",
+#         "인천광역시": "부평물류센터",
+#         "강원특별자치도": "원주우편집중국",
+#         "충청북도": "청주우편집중국",
+#         "충청남도": "천안우편집중국",
+#         "대전광역시": "대전교환센터",
+#         "세종특별자치시": "대전교환센터",
+#         "전북특별자치도": "전주우편집중국",
+#         "전라남도": "순천집중과",
+#         "광주광역시": "광주우편집중국",
+#         "경상북도": "안동우편집중국",
+#         "경상남도": "창원우편집중국",
+#         "대구광역시": "대구우편집중국",
+#         "울산광역시": "울산우편집중국",
+#         "부산광역시": "부산우편집중국",
+#         "제주특별자치도": "제주우편집중국",
+#     }
+# except: pass
 
 # ---------------------------------------------------------------------------
 # 0. 트럭 톤급 카탈로그 (2021년 우정사업본부 실데이터에서 확인된 실제 운용 톤급)
@@ -71,14 +100,6 @@ REGION_COORDS = {
     "광주광역시": (35.1595, 126.8526), "제주특별자치도": (33.4996, 126.5312),
 }
 
-# 실제 3개 물류사업소(우체국물류지원단 공개 위치정보 기준 대략 좌표)
-HUB_COORDS = {
-    "동서울물류센터": (37.5504, 127.2495),  # 하남시 인근
-    "안양물류센터": (37.3943, 126.9568),
-    "부평물류센터": (37.5069, 126.7218),
-}
-
-
 def haversine_km(p1: tuple[float, float], p2: tuple[float, float]) -> float:
     lat1, lon1 = p1
     lat2, lon2 = p2
@@ -91,12 +112,19 @@ def haversine_km(p1: tuple[float, float], p2: tuple[float, float]) -> float:
 
 
 def region_distance_km(region_a: str, region_b: str) -> float:
+    # if not is_distance_data_available: # 실제 데이터 사용이 불가하다면 근사좌표값을 사용.
+    #     return haversine_km(REGION_COORDS[region_a], REGION_COORDS[region_b])
+    # # 지역명을 대표 집중국명으로 변환
+    # hub_a = REGION_TO_HUB.get(region_a)
+    # hub_b = REGION_TO_HUB.get(region_b)
+    # # 거리 검색
+    # try:
+    #     distance = data_distance.loc[(hub_a, hub_b), '운송거리(km)']
+    # except: # 데이터에서 해당 경로를 못찾은경우 근사치 이용.
+    #     print(f"{hub_a}->{hub_b} is not available at distance_data...") # 디버깅용..
+    #     distance = haversine_km(REGION_COORDS[region_a], REGION_COORDS[region_b])
+    # return distance
     return haversine_km(REGION_COORDS[region_a], REGION_COORDS[region_b])
-
-
-def region_to_hub_distance_km(region: str, hub: str) -> float:
-    return haversine_km(REGION_COORDS[region], HUB_COORDS[hub])
-
 
 # ---------------------------------------------------------------------------
 # 3. 트럭 배차(bin-packing) — OR-Tools CP-SAT

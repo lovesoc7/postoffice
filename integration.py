@@ -22,7 +22,7 @@ def run_daily_dispatch_optimization(
     dest_col: str = "배달지역",
     weight_col: str = "예측중량_kg",
     min_weight_kg: float = 1.0,  # 이보다 적으면 그날 그 노선은 물량 없음으로 취급
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, dict]:
     """
     날짜 x 목적지 단위로 그룹핑해서 [직송] vs [허브경유] 비용을 비교하고,
     최종 선택된 비용을 기록한 요약 테이블을 반환한다.
@@ -30,6 +30,7 @@ def run_daily_dispatch_optimization(
     df = df_pred[df_pred[weight_col] >= min_weight_kg].copy()
 
     records = []
+    merge_histories = {}
     grouped = df.groupby([date_col, dest_col])
 
     for (date, dest), g in grouped:
@@ -62,8 +63,11 @@ def run_daily_dispatch_optimization(
             "최종_비용": result.best_hub_cost if result.decision == "hub" else result.direct_cost,
             "절감액": result.savings if result.decision == "hub" else 0,
         })
+        if merge_histories.get(str(date))==None:
+            merge_histories[str(date)] = {}
+        merge_histories[str(date)][dest] = result.detail['merge_history']
 
-    return pd.DataFrame.from_records(records)
+    return pd.DataFrame.from_records(records), merge_histories
 
 
 def summarize_savings(summary_df: pd.DataFrame) -> dict:

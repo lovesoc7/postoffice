@@ -381,3 +381,67 @@ def split_timeseries_data(
     print("=" * 50)
 
     return train_df, test_df
+
+# 17개 광역 지자체 대표 집중국 좌표 매핑 (경도 Longitude, 위도 Latitude)
+HUB_COORDS = {
+    "동서울우편집중국": (127.0963, 37.5350),  # 서울
+    "수원우편집중국": (127.0205, 37.2642),  # 경기
+    "부평물류센터": (126.7210, 37.5075),  # 인천
+    "원주우편집중국": (127.9450, 37.3421),  # 강원
+    "청주우편집중국": (127.4610, 36.6350),  # 충북
+    "천안우편집중국": (127.1510, 36.8150),  # 충남
+    "대전교환센터": (127.3850, 36.3620),  # 대전 / 세종
+    "전주우편집중국": (127.1350, 35.8250),  # 전북
+    "순천집중과": (127.4890, 34.9510),  # 전남
+    "광주우편집중국": (126.8850, 35.1750),  # 광주
+    "안동우편집중국": (128.7290, 36.5650),  # 경북
+    "창원우편집중국": (128.6810, 35.2280),  # 경남
+    "대구우편집중국": (128.5830, 35.8850),  # 대구
+    "울산우편집중국": (129.3320, 35.5680),  # 울산
+    "부산우편집중국": (128.9830, 35.1580),  # 부산
+    "제주우편집중국": (126.5280, 33.5080),  # 제주
+}
+
+import time
+import pandas as pd
+import requests
+from dotenv import load_dotenv
+
+load_dotenv()
+KAKAO_API_KEY = os.getenv("KAKAO_REST_API_KEY")
+
+matrix_data = []
+
+for orig_name, orig_coord in HUB_COORDS.items():
+    for dest_name, dest_coord in HUB_COORDS.items():
+        if orig_name == dest_name:
+            dist = 15.0  # 동일 거점 내부 이동
+        else:
+            # 카카오 길찾기 API URL (origin/destination = 경도,위도)
+            url = f"https://kapi.kakao.com/v1/directions?origin={orig_coord[0]},{orig_coord[1]}&destination={dest_coord[0]},{dest_coord[1]}"
+            headers = {"Authorization": f"KakaoAK {KAKAO_API_KEY}"}
+
+            res = requests.get(url, headers=headers).json()
+
+            try:
+                # 미터(m) -> 킬로미터(km) 변환
+                dist = round(
+                    res["routes"][0]["summary"]["distance"] / 1000.0, 2
+                )
+            except Exception:
+                dist = 100.0  # 예외 시 대치값
+
+            time.sleep(0.03)  # 호출 제한 방지
+
+        matrix_data.append({
+            "발송집중국": orig_name,
+            "도착집중국": dest_name,
+            "운송거리(km)": dist,
+        })
+
+# CSV로 저장하여 보관!
+df_real_matrix = pd.DataFrame(matrix_data)
+df_real_matrix.to_csv(
+    "real_hub_distance_matrix.csv", index=False, encoding="cp949"
+)
+print("🎉 실제 도로 수송거리 289개 매트릭스 생성 완료!")
