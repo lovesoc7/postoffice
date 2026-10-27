@@ -1,0 +1,11 @@
+# Python 3.10 이상
+pandas
+numpy
+scikit-learn
+torch
+lightgbm
+ortools
+holidays
+requests
+python-dotenv
+jupyter
